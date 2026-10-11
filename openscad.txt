@@ -1,0 +1,323 @@
+$fn = 180;
+
+// ============================================================
+// USER PARAMETERS
+// ============================================================
+
+// Measured telescope base fit
+inner_diameter = 211.25;
+
+// GT2 geometry
+teeth = 352;
+pitch = 2.0;
+
+// Height of toothed belt-contact section
+belt_width = 7.0;
+
+// Bottom belt guide
+bottom_flange_height = 1.5;
+bottom_flange_radial_extra = 1.5;
+
+// Top flange
+top_flange_height = 3.0;
+top_outer_extra = 1.5;
+
+// How far the top mounting shelf extends inward
+top_inner_lip = 10.0;
+
+// Telescope-arm clearance
+cutout_angle = 100;
+cutout_center_angle = 0;
+
+// Mounting holes
+screw_diameter = 4.0;
+screw_radius = 101.0;
+
+// Keep holes away from the arm cutout
+screw_angles = [90, 180, 270];
+
+
+// ============================================================
+// GT2 GEOMETRY
+// ============================================================
+
+pitch_line_offset = 0.254;
+tooth_width = 1.494;
+
+pitch_diameter = teeth * pitch / PI;
+pulley_OD = pitch_diameter - 2 * pitch_line_offset;
+
+pulley_radius = pulley_OD / 2;
+inner_radius = inner_diameter / 2;
+
+tooth_distance =
+    sqrt(
+        pow(pulley_radius, 2)
+        - pow(tooth_width / 2, 2)
+    );
+
+echo("Pitch diameter:", pitch_diameter);
+echo("Pulley OD:", pulley_OD);
+echo("Inner diameter:", inner_diameter);
+echo("Radial wall thickness:",
+     pulley_radius - inner_radius);
+
+
+// ============================================================
+// GT2 TOOTH PROFILE
+// ============================================================
+
+module gt2_tooth_negative(height)
+{
+    linear_extrude(height = height)
+        polygon(points = [
+
+            [ 0.747183,-0.5      ],
+            [ 0.747183, 0        ],
+            [ 0.647876, 0.037218 ],
+            [ 0.598311, 0.130528 ],
+            [ 0.578556, 0.238423 ],
+            [ 0.547158, 0.343077 ],
+            [ 0.504649, 0.443762 ],
+            [ 0.451556, 0.539750 ],
+            [ 0.358229, 0.636924 ],
+            [ 0.248400, 0.707276 ],
+            [ 0.127259, 0.750044 ],
+            [ 0,         0.764470 ],
+            [-0.127259, 0.750044 ],
+            [-0.248400, 0.707276 ],
+            [-0.358229, 0.636924 ],
+            [-0.451556, 0.539750 ],
+            [-0.504797, 0.443762 ],
+            [-0.547291, 0.343077 ],
+            [-0.578605, 0.238423 ],
+            [-0.598311, 0.130528 ],
+            [-0.648009, 0.037218 ],
+            [-0.747183, 0        ],
+            [-0.747183,-0.5      ]
+
+        ]);
+}
+
+
+// ============================================================
+// MAIN TOOTHED RING
+// ============================================================
+
+module toothed_ring()
+{
+    difference()
+    {
+        // Plain annular body
+        difference()
+        {
+            cylinder(
+                r = pulley_radius,
+                h = belt_width
+            );
+
+            translate([0, 0, -0.5])
+                cylinder(
+                    r = inner_radius,
+                    h = belt_width + 1
+                );
+        }
+
+        // Cut GT2 tooth valleys
+        for (i = [0 : teeth - 1])
+        {
+            rotate([0, 0, i * 360 / teeth])
+                translate([
+                    0,
+                    -tooth_distance,
+                    -0.5
+                ])
+                    gt2_tooth_negative(
+                        belt_width + 1
+                    );
+        }
+    }
+}
+
+
+// ============================================================
+// BOTTOM BELT GUIDE
+// ============================================================
+
+module bottom_flange()
+{
+    difference()
+    {
+        cylinder(
+            r = pulley_radius
+                + bottom_flange_radial_extra,
+            h = bottom_flange_height
+        );
+
+        translate([0, 0, -0.5])
+            cylinder(
+                r = inner_radius,
+                h = bottom_flange_height + 1
+            );
+    }
+}
+
+
+// ============================================================
+// ANGULAR CUTOUT HELPER
+// ============================================================
+
+module sector_wedge_2d(radius, angle)
+{
+    steps = max(8, ceil(angle / 5));
+
+    points =
+        concat(
+            [[0,0]],
+
+            [
+                for (i = [0 : steps])
+                    [
+                        radius
+                            * cos(
+                                -angle/2
+                                + i * angle/steps
+                              ),
+
+                        radius
+                            * sin(
+                                -angle/2
+                                + i * angle/steps
+                              )
+                    ]
+            ]
+        );
+
+    polygon(points = points);
+}
+
+
+// ============================================================
+// COMPLETE TOP FLANGE
+// ============================================================
+//
+// One continuous flat top surface:
+//
+// - outer section acts as belt-retaining flange
+// - inner section sits on top of telescope base
+// - only the inward mounting section gets the arm cutout
+//
+
+module top_flange()
+{
+    outer_radius =
+        pulley_radius + top_outer_extra;
+
+    mounting_inner_radius =
+        inner_radius - top_inner_lip;
+
+    difference()
+    {
+        // ----------------------------------------------------
+        // MAIN CONTINUOUS TOP ANNULUS
+        // ----------------------------------------------------
+
+        difference()
+        {
+            cylinder(
+                r = outer_radius,
+                h = top_flange_height
+            );
+
+            translate([0, 0, -0.5])
+                cylinder(
+                    r = mounting_inner_radius,
+                    h = top_flange_height + 1
+                );
+        }
+
+
+        // ----------------------------------------------------
+        // ARM CUTOUT
+        //
+        // Restrict this cutout only to the inward mounting lip.
+        // The outer belt-guide ring remains continuous.
+        // ----------------------------------------------------
+
+        intersection()
+        {
+            // Region of the inward mounting lip
+            difference()
+            {
+                cylinder(
+                    r = inner_radius,
+                    h = top_flange_height + 1
+                );
+
+                translate([0, 0, -0.5])
+                    cylinder(
+                        r = mounting_inner_radius,
+                        h = top_flange_height + 2
+                    );
+            }
+
+            // Angular wedge removed for the arm
+            rotate([0, 0, cutout_center_angle])
+                translate([0, 0, -0.5])
+                    linear_extrude(
+                        height = top_flange_height + 2
+                    )
+                        sector_wedge_2d(
+                            radius = inner_radius + 5,
+                            angle = cutout_angle
+                        );
+        }
+
+
+        // ----------------------------------------------------
+        // MOUNTING HOLES
+        // ----------------------------------------------------
+
+        for (a = screw_angles)
+        {
+            rotate([0, 0, a])
+                translate([
+                    screw_radius,
+                    0,
+                    -0.5
+                ])
+                    cylinder(
+                        d = screw_diameter,
+                        h = top_flange_height + 1,
+                        $fn = 40
+                    );
+        }
+    }
+}
+
+
+// ============================================================
+// FINAL MODEL
+// ============================================================
+
+union()
+{
+    // Bottom guide flange
+    bottom_flange();
+
+    // GT2 toothed section
+    translate([
+        0,
+        0,
+        bottom_flange_height
+    ])
+        toothed_ring();
+
+    // Flat top flange / mounting shelf
+    translate([
+        0,
+        0,
+        bottom_flange_height + belt_width
+    ])
+        top_flange();
+}

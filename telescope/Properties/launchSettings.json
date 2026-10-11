@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "telescope": {
+      "commandName": "Project",
+      "commandLineArgs": "5"
+    }
+  }
+}
