@@ -333,3 +333,5 @@ ASALocalRun/
 
 # Temp
 **/Temp
+
+**libraries/TMCStepper/*
