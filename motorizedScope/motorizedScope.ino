@@ -2,155 +2,93 @@
 #include <Arduino.h>
 #include <TMCStepper.h>
 
-// ESP32 pins
-constexpr uint8_t STEP_PIN = 13;
-constexpr uint8_t DIR_PIN  = 14;
-constexpr uint8_t EN_PIN   = 27;
-
-// TMC2209 UART
-constexpr uint8_t UART_RX = 26;
-constexpr uint8_t UART_TX = 25;
-
-// BigTreeTech TMC2209 V1.3
 constexpr float R_SENSE = 0.11f;
-constexpr uint8_t DRIVER_ADDRESS = 0;
+constexpr uint32_t UART_BAUD = 115200;
 
-// Motor settings
-constexpr uint16_t MOTOR_CURRENT = 500; // mA RMS
-constexpr uint16_t MICROSTEPS = 32;
+// Motor 1: Azimuth
+constexpr int AZ_STEP = 26;
+constexpr int AZ_DIR  = 25;
+constexpr int AZ_EN   = 27;
+constexpr int AZ_RX   = 32;
+constexpr int AZ_TX   = 33;
 
-// Test movement
-constexpr int SPEED = 8000; // microsteps per second
-constexpr int STEPS_PER_MOVE = 6400;
+// Motor 2: Elevation
+constexpr int EL_STEP = 18;
+constexpr int EL_DIR  = 19;
+constexpr int EL_EN   = 23;
+constexpr int EL_RX   = 16;
+constexpr int EL_TX   = 17;
 
-HardwareSerial TMCSerial(2);
+// Two independent hardware UARTs
+HardwareSerial azUart(1);
+HardwareSerial elUart(2);
 
-TMC2209Stepper driver(
-  &TMCSerial,
-  R_SENSE,
-  DRIVER_ADDRESS
-);
+// Both use address 0 because UARTs are separate
+TMC2209Stepper azDriver(&azUart, R_SENSE, 0);
+TMC2209Stepper elDriver(&elUart, R_SENSE, 0);
 
-bool driverReady = false;
+void initPins(int step, int dir, int enable) {
+  // Disable the motor before configuring movement pins
+  digitalWrite(enable, HIGH);
+  pinMode(enable, OUTPUT);
 
-void rotate(bool direction) {
-  digitalWrite(DIR_PIN, direction ? HIGH : LOW);
-  delay(10);
+  digitalWrite(step, LOW);
+  pinMode(step, OUTPUT);
+  pinMode(dir, OUTPUT);
+}
 
-  const unsigned long halfPeriod =
-      1000000UL / SPEED / 2;
+void initDriver(TMC2209Stepper &driver) {
+  driver.begin();
+  driver.pdn_disable(true);
+  driver.I_scale_analog(false);
+  driver.mstep_reg_select(true);
+}
 
-  for (int i = 0; i < STEPS_PER_MOVE; i++) {
-    digitalWrite(STEP_PIN, HIGH);
-    delayMicroseconds(halfPeriod);
+void checkDriver(const char* name, TMC2209Stepper &driver) {
+  uint8_t version = driver.version();
 
-    digitalWrite(STEP_PIN, LOW);
-    delayMicroseconds(halfPeriod);
+  Serial.printf("%s: TMC version = 0x%02X\n",
+                name, version);
+
+  if (version == 0x21) {
+    Serial.printf("%s: UART OK!\n", name);
+  } else {
+    Serial.printf("%s: Check UART wiring and power.\n", name);
   }
 }
 
 void setup() {
-  // Keep motor disabled during initialization
-  digitalWrite(EN_PIN, HIGH);
-  pinMode(EN_PIN, OUTPUT);
-
-  pinMode(STEP_PIN, OUTPUT);
-  pinMode(DIR_PIN, OUTPUT);
-
-  digitalWrite(STEP_PIN, LOW);
-  digitalWrite(DIR_PIN, LOW);
-
   Serial.begin(115200);
-  delay(1000);
+  delay(500);
 
-  Serial.println();
-  Serial.println("=== Telescope motor test ===");
+  initPins(AZ_STEP, AZ_DIR, AZ_EN);
+  initPins(EL_STEP, EL_DIR, EL_EN);
 
-  // Initialize UART
-  TMCSerial.begin(
-    115200,
-    SERIAL_8N1,
-    UART_RX,
-    UART_TX
-  );
+  // UART1 and UART2 on our chosen GPIO pins
+  azUart.begin(UART_BAUD, SERIAL_8N1, AZ_RX, AZ_TX);
+  elUart.begin(UART_BAUD, SERIAL_8N1, EL_RX, EL_TX);
 
-  driver.begin();
+  // Both drivers must have VIO and VS power
+  delay(100);
 
-  // Check communication before configuring motor
-  uint8_t result = driver.test_connection();
+  initDriver(azDriver);
+  initDriver(elDriver);
 
-  Serial.print("UART result: ");
-  Serial.println(result);
+  checkDriver("AZIMUTH", azDriver);
+  checkDriver("ELEVATION", elDriver);
 
-  Serial.print("Driver version: 0x");
-  Serial.println(driver.version(), HEX);
-
-  if (result != 0 || driver.version() != 0x21) {
-    Serial.println("ERROR: TMC2209 not responding!");
-    Serial.println("Motor remains disabled.");
-    return;
-  }
-
-  Serial.println("UART communication OK");
-
-  // Configure driver via UART
-  driver.pdn_disable(true);
-  driver.I_scale_analog(false);
-  driver.mstep_reg_select(true);
-
-  // Enable driver chopper
-  driver.toff(4);
-
-  // Motor current - no potentiometer needed!
-  driver.rms_current(MOTOR_CURRENT);
-
-  // Microstepping
-  driver.microsteps(MICROSTEPS);
-
-  // StealthChop - quiet operation
-  driver.en_spreadCycle(false);
-  driver.pwm_autoscale(true);
-
-  // Verify settings through UART
-  if (driver.microsteps() != MICROSTEPS ||
-      driver.test_connection() != 0) {
-    Serial.println("ERROR: Driver configuration failed!");
-    Serial.println("Motor remains disabled.");
-    return;
-  }
-
-  Serial.print("Motor current: ");
-  Serial.print(MOTOR_CURRENT);
-  Serial.println(" mA RMS");
-
-  Serial.print("Microstepping: 1/");
-  Serial.println(MICROSTEPS);
-
-  Serial.println("Enabling motor...");
-
-  // EN is active LOW
-  digitalWrite(EN_PIN, LOW);
-
-  driverReady = true;
-
-  Serial.println("Ready!");
+  Serial.println("Initialization complete.");
 }
 
-
 void loop() {
-  if (!driverReady) {
-    Serial.println("Not Ready!");
-    delay(1000);
-    return;
-  }
-
-  Serial.println("Clockwise - 360 degrees");
-  rotate(true);
-
-  delay(1000);
-
-  Serial.println("Counterclockwise - 360 degrees");
-  rotate(false);
+  Serial.printf(
+    "AZ: version=0x%02X, connection=%d | "
+    "EL: version=0x%02X, connection=%d\n",
+    azDriver.version(),
+    azDriver.test_connection(),
+    elDriver.version(),
+    elDriver.test_connection()
+  );
 
   delay(1000);
 }
