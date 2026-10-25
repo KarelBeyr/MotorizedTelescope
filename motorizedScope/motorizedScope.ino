@@ -8,25 +8,38 @@
 // ============================================================
 // USER SETTINGS
 // ============================================================
-constexpr int32_t SMALL_MOVEMENT = 200;
-constexpr int32_t LARGE_MOVEMENT = 2000;
+// IMPORTANT: Calibrate these separately from your camera's field of view
+// and desired photo overlap. These are EXAMPLE pitches, NOT calculated
+// for your telescope; the automatic scan will use these as maximum spacings.
+constexpr uint32_t FRAME_AZ_PITCH = 70;    // microsteps between columns
+constexpr uint32_t FRAME_EL_PITCH = 35;    // microsteps between rows
+
+// Manual movement sizes, independent for azimuth and elevation.
+constexpr int32_t AZ_SMALL_MOVEMENT = FRAME_AZ_PITCH;
+constexpr int32_t AZ_LARGE_MOVEMENT = 2000;
+constexpr int32_t EL_SMALL_MOVEMENT = FRAME_EL_PITCH;
+constexpr int32_t EL_LARGE_MOVEMENT = 400;
+
+// Manual movement speeds. Uppercase retains the faster movement.
 constexpr uint32_t SLOW_SPEED = 400;        // microsteps / second
 constexpr uint32_t FAST_SPEED = 2000;       // microsteps / second
 constexpr uint32_t ACCELERATION = 2500;     // microsteps / second^2
 
-// IMPORTANT: Calibrate these separately from your camera's field of view
-// and desired photo overlap. These are EXAMPLE pitches, NOT calculated
-// for your telescope; the automatic scan will use these as maximum spacings.
-constexpr uint32_t FRAME_AZ_PITCH = 100;    // microsteps between columns
-constexpr uint32_t FRAME_EL_PITCH = 100;    // microsteps between rows
+// Frame-to-frame scanning is deliberately gentle.
+// Initial return to home (g) and manual return (h) use FAST_SPEED.
+constexpr uint32_t AZ_SCAN_SPEED = 400;     // microsteps / second
+constexpr uint32_t EL_SCAN_SPEED = 300;     // microsteps / second
+constexpr uint32_t AZ_SCAN_ACCELERATION = 500; // microsteps / second^2
+constexpr uint32_t EL_SCAN_ACCELERATION = 400; // microsteps / second^2
 
-constexpr uint32_t SETTLE_MS = 2000;        // after motion, before shutter
+constexpr uint32_t SETTLE_MS = 3000;        // after motion, before shutter
+constexpr uint32_t DRY_RUN_PAUSE_MS = 250;  // per-frame pause in dry-run mode
 constexpr uint32_t AFTER_SHOT_MS = 1000;    // after shutter, before movement
 constexpr uint32_t MAX_FRAMES = 1500;       // accidental-scan safety cap
 
 constexpr uint16_t AZ_CURRENT_MA = 350;
 constexpr uint16_t EL_CURRENT_MA = 350;
-constexpr float AZ_HOLD_MULT = 0.70f;
+constexpr float AZ_HOLD_MULT = 1.00f;
 constexpr float EL_HOLD_MULT = 1.00f;
 
 constexpr uint16_t MICROSTEPS = 16;
@@ -142,6 +155,8 @@ uint32_t columns = 0, rows = 0;
 uint32_t photosTaken = 0;
 uint32_t stageStartedAt = 0;
 bool manualMovementPending = false;
+bool dryRunMode = false;                  // 'y' toggles this while idle
+
 
 bool scanActive() { return scanState != ScanState::Idle; }
 
@@ -168,12 +183,13 @@ void getFramePosition(uint32_t photoIndex, int32_t &az, int32_t &el) {
   el = interpolatedPosition(targetEl, row, rows);
 }
 
-bool commandAbsoluteMove(int32_t az, int32_t el) {
+bool commandAbsoluteMove(int32_t az, int32_t el, bool fastTravel = false) {
   enableMotors();
-  azMotor->setSpeedInHz(FAST_SPEED);
-  elMotor->setSpeedInHz(FAST_SPEED);
-  azMotor->setAcceleration(ACCELERATION);
-  elMotor->setAcceleration(ACCELERATION);
+  // Fast for homing journeys, gentle between panorama frames.
+  azMotor->setSpeedInHz(fastTravel ? FAST_SPEED : AZ_SCAN_SPEED);
+  elMotor->setSpeedInHz(fastTravel ? FAST_SPEED : EL_SCAN_SPEED);
+  azMotor->setAcceleration(fastTravel ? ACCELERATION : AZ_SCAN_ACCELERATION);
+  elMotor->setAcceleration(fastTravel ? ACCELERATION : EL_SCAN_ACCELERATION);
 
   auto resultAz = azMotor->moveTo(az);
   auto resultEl = elMotor->moveTo(el);
@@ -201,7 +217,7 @@ void cancelScan(bool stopMotors) {
 void goToFrame(uint32_t index) {
   int32_t az, el;
   getFramePosition(index, az, el);
-  if (!commandAbsoluteMove(az, el)) {
+  if (!commandAbsoluteMove(az, el, index == 0)) {
     cancelScan(false);
     return;
   }
@@ -225,14 +241,14 @@ void startScan() {
     logf("Wait for motors to stop before starting scan.");
     return;
   }
-  if (!bleKeyboard.isConnected()) {
-    logf("BLE shutter disconnected; connect your phone first.");
+  if (!dryRunMode && !bleKeyboard.isConnected()) {
+    logf("BLE shutter disconnected; connect your phone first (or press y for dry run).");
     return;
   }
   columns = pointsForRange(targetAz, FRAME_AZ_PITCH);
   rows = pointsForRange(targetEl, FRAME_EL_PITCH);
   uint64_t total = (uint64_t)columns * rows;
-  if (columns < 2 || rows < 2 || total > MAX_FRAMES) {
+  if (total < 2 || total > MAX_FRAMES) {
     logf("Invalid grid %lu x %lu (%llu frames). Check pitches/target.",
          (unsigned long)columns, (unsigned long)rows,
          (unsigned long long)total);
@@ -241,11 +257,24 @@ void startScan() {
 
   photosTaken = 0;
   manualMovementPending = false;
-  logf("Starting %lu x %lu panorama (%llu photos).",
+  logf("Starting %s: %lu columns x %lu rows (%llu frames).",
+       dryRunMode ? "DRY RUN" : "PHOTO SCAN",
        (unsigned long)columns, (unsigned long)rows,
        (unsigned long long)total);
-  // From bottom-right (where b was marked), automatically return
-  // to top-left for the first photo.
+  logf("Frame wait: %lu ms%s",
+       (unsigned long)(dryRunMode ? DRY_RUN_PAUSE_MS : SETTLE_MS),
+       dryRunMode ? "; BLE shutter disabled" : "; BLE shutter enabled");
+  logf("Bounds AZ=[%ld..%ld] EL=[%ld..%ld] (commanded microsteps)",
+       (long)(targetAz < 0 ? targetAz : 0),
+       (long)(targetAz > 0 ? targetAz : 0),
+       (long)(targetEl < 0 ? targetEl : 0),
+       (long)(targetEl > 0 ? targetEl : 0));
+  logf("Scan speeds AZ=%lu/s EL=%lu/s; accelerations AZ=%lu EL=%lu",
+       (unsigned long)AZ_SCAN_SPEED, (unsigned long)EL_SCAN_SPEED,
+       (unsigned long)AZ_SCAN_ACCELERATION,
+       (unsigned long)EL_SCAN_ACCELERATION);
+  // From bottom-right (where b was marked), return at FAST_SPEED
+  // to top-left for the first photo; then scan at gentle speed.
   goToFrame(0);
 }
 
@@ -260,9 +289,29 @@ void updateScan() {
       }
       break;
 
-    case ScanState::Settling:
-      if ((uint32_t)(millis() - stageStartedAt) >= SETTLE_MS) {
-        if (!bleKeyboard.isConnected()) {
+    case ScanState::Settling: {
+      const uint32_t pauseMs = dryRunMode ? DRY_RUN_PAUSE_MS : SETTLE_MS;
+      if ((uint32_t)(millis() - stageStartedAt) >= pauseMs) {
+        if (dryRunMode) {
+          // One visit per frame; never access BLE or send a shutter key.
+          ++photosTaken;
+          logf("DRY frame %lu/%lu: AZ=%ld EL=%ld (no shutter)",
+               (unsigned long)photosTaken,
+               (unsigned long)(columns * rows),
+               (long)azMotor->getCurrentPosition(),
+               (long)elMotor->getCurrentPosition());
+
+          // In dry mode, skip AFTER_SHOT_MS as well, so there is
+          // only one configurable pause per frame.
+          if (photosTaken == columns * rows) {
+            scanState = ScanState::Idle;
+            logf("DRY RUN COMPLETE: %lu frames visited; no photos taken.",
+                 (unsigned long)photosTaken);
+            printPosition();
+          } else {
+            goToFrame(photosTaken);
+          }
+        } else if (!bleKeyboard.isConnected()) {
           logf("BLE disconnected: waiting (no photo skipped).");
           scanState = ScanState::WaitingForBluetooth;
         } else if (triggerShutter()) {
@@ -274,6 +323,7 @@ void updateScan() {
         }
       }
       break;
+    }
 
     case ScanState::WaitingForBluetooth:
       if (bleKeyboard.isConnected()) {
@@ -327,20 +377,21 @@ void manualMove(FastAccelStepper *motor, int32_t steps,
 void printHelp() {
   logf("l/L r/R u/U d/D = small/large move");
   logf("c = set top-left HOME to (0,0); b = mark bottom-right");
-  logf("g = start snake scan; f = manual BLE photo");
+  logf("y = toggle DRY RUN (no BLE, shorter pause); g = start scan");
+  logf("f = manual BLE photo (even in dry mode)");
   logf("h = go HOME; s = stop/cancel; p = position; ? = help");
 }
 
 void handleCommand(char cmd) {
   switch (cmd) {
-    case 'l': manualMove(azMotor, -SMALL_MOVEMENT, SLOW_SPEED, "AZ"); break;
-    case 'L': manualMove(azMotor, -LARGE_MOVEMENT, FAST_SPEED, "AZ"); break;
-    case 'r': manualMove(azMotor,  SMALL_MOVEMENT, SLOW_SPEED, "AZ"); break;
-    case 'R': manualMove(azMotor,  LARGE_MOVEMENT, FAST_SPEED, "AZ"); break;
-    case 'u': manualMove(elMotor,  SMALL_MOVEMENT, SLOW_SPEED, "EL"); break;
-    case 'U': manualMove(elMotor,  LARGE_MOVEMENT, FAST_SPEED, "EL"); break;
-    case 'd': manualMove(elMotor, -SMALL_MOVEMENT, SLOW_SPEED, "EL"); break;
-    case 'D': manualMove(elMotor, -LARGE_MOVEMENT, FAST_SPEED, "EL"); break;
+    case 'l': manualMove(azMotor, -AZ_SMALL_MOVEMENT, SLOW_SPEED, "AZ"); break;
+    case 'L': manualMove(azMotor, -AZ_LARGE_MOVEMENT, FAST_SPEED, "AZ"); break;
+    case 'r': manualMove(azMotor,  AZ_SMALL_MOVEMENT, SLOW_SPEED, "AZ"); break;
+    case 'R': manualMove(azMotor,  AZ_LARGE_MOVEMENT, FAST_SPEED, "AZ"); break;
+    case 'u': manualMove(elMotor,  EL_SMALL_MOVEMENT, SLOW_SPEED, "EL"); break;
+    case 'U': manualMove(elMotor,  EL_LARGE_MOVEMENT, FAST_SPEED, "EL"); break;
+    case 'd': manualMove(elMotor, -EL_SMALL_MOVEMENT, SLOW_SPEED, "EL"); break;
+    case 'D': manualMove(elMotor, -EL_LARGE_MOVEMENT, FAST_SPEED, "EL"); break;
 
     case 'c':
       if (scanActive() || motorsMoving()) {
@@ -360,7 +411,7 @@ void handleCommand(char cmd) {
       } else {
         targetAz = azMotor->getCurrentPosition();
         targetEl = elMotor->getCurrentPosition();
-        targetDefined = (targetAz != 0 && targetEl != 0);
+        targetDefined = (targetAz != 0 || targetEl != 0);
         logf("Bottom-right: AZ=%ld EL=%ld %s", (long)targetAz,
              (long)targetEl, targetDefined ? "(saved)" : "(invalid)");
         if (targetDefined) {
@@ -373,14 +424,25 @@ void handleCommand(char cmd) {
       }
       break;
 
+    case 'y':
+      if (scanActive()) {
+        logf("Cannot change dry-run mode during an active scan; press s first.");
+      } else {
+        dryRunMode = !dryRunMode;
+        logf("Mode: %s | per-frame pause=%lu ms",
+             dryRunMode ? "DRY RUN (no BLE/shutter)" : "PHOTO (BLE shutter)",
+             (unsigned long)(dryRunMode ? DRY_RUN_PAUSE_MS : SETTLE_MS));
+      }
+      break;
+
     case 'g': startScan(); break;
 
     case 'h':
       if (!homeDefined || scanActive() || motorsMoving()) {
         logf("Cannot go home yet (undefined home or busy).");
-      } else if (commandAbsoluteMove(0, 0)) {
+      } else if (commandAbsoluteMove(0, 0, true)) {
         manualMovementPending = true;
-        logf("Returning to HOME (0,0)...");
+        logf("Returning to HOME (0,0) at fast manual speed...");
       }
       break;
 
@@ -394,10 +456,12 @@ void handleCommand(char cmd) {
 
     case 'p':
       printPosition();
-      logf("BLE: %s | Grid: %s | Scan: %s | Taken: %lu",
+      logf("Mode: %s | BLE: %s | Target: %s | Scan: %s | %s: %lu",
+           dryRunMode ? "DRY RUN" : "PHOTO",
            bleKeyboard.isConnected() ? "connected" : "disconnected",
            targetDefined ? "set" : "unset",
            scanActive() ? "active" : "idle",
+           dryRunMode ? "Frames visited" : "Shutters sent",
            (unsigned long)photosTaken);
       break;
 
@@ -455,6 +519,13 @@ void setup() {
   logf("Grid pitch (change in sketch): AZ=%lu, EL=%lu microsteps",
        (unsigned long)FRAME_AZ_PITCH,
        (unsigned long)FRAME_EL_PITCH);
+  logf("Manual steps: AZ small=%ld large=%ld; EL small=%ld large=%ld",
+       (long)AZ_SMALL_MOVEMENT, (long)AZ_LARGE_MOVEMENT,
+       (long)EL_SMALL_MOVEMENT, (long)EL_LARGE_MOVEMENT);
+  logf("Home/scan speeds: AZ=%lu/s EL=%lu/s",
+       (unsigned long)AZ_SCAN_SPEED, (unsigned long)EL_SCAN_SPEED);
+  logf("Mode: PHOTO (default); press y to toggle DRY RUN, pause %lu ms",
+       (unsigned long)DRY_RUN_PAUSE_MS);
   printHelp();
 }
 
