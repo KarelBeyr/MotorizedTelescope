@@ -51,12 +51,16 @@ constexpr bool AZ_REVERSED = true;
 constexpr bool EL_REVERSED = false;
 
 // ============================================================
-// PINOUT -- unchanged from the working two-UART firmware
+// PINOUT -- updated for the newly soldered board (Option A)
+// AZ: STEP=32, DIR=19, EN=25, UART RX=34, TX=33
+// EL: STEP=12, DIR=14, EN=13, UART RX=27, TX=26
+// For each driver: UART TX -> 1k resistor -> TMC2209 RX/PDN_UART;
+//                  UART RX ----------------> same TMC2209 RX/PDN_UART.
 // ============================================================
-constexpr int AZ_STEP = 26, AZ_DIR = 25, AZ_EN = 27;
-constexpr int AZ_RX = 32, AZ_TX = 33;
-constexpr int EL_STEP = 18, EL_DIR = 19, EL_EN = 23;
-constexpr int EL_RX = 16, EL_TX = 17;
+constexpr int AZ_STEP = 32, AZ_DIR = 19, AZ_EN = 25;
+constexpr int AZ_RX = 34, AZ_TX = 33;
+constexpr int EL_STEP = 12, EL_DIR = 14, EL_EN = 13;
+constexpr int EL_RX = 27, EL_TX = 26;
 
 HardwareSerial azUart(1), elUart(2);
 TMC2209Stepper azDriver(&azUart, R_SENSE, 0);
