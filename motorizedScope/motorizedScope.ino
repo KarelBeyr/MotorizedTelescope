@@ -11,18 +11,18 @@
 // IMPORTANT: Calibrate these separately from your camera's field of view
 // and desired photo overlap. These are EXAMPLE pitches, NOT calculated
 // for your telescope; the automatic scan will use these as maximum spacings.
-constexpr uint32_t FRAME_AZ_PITCH = 70;    // microsteps between columns
-constexpr uint32_t FRAME_EL_PITCH = 35;    // microsteps between rows
+constexpr uint32_t FRAME_AZ_PITCH = 2000;    // microsteps between columns
+constexpr uint32_t FRAME_EL_PITCH = 600;     // microsteps between rows
 
 // Manual movement sizes, independent for azimuth and elevation.
 constexpr int32_t AZ_SMALL_MOVEMENT = FRAME_AZ_PITCH;
-constexpr int32_t AZ_LARGE_MOVEMENT = 2000;
+constexpr int32_t AZ_LARGE_MOVEMENT = FRAME_AZ_PITCH*15;
 constexpr int32_t EL_SMALL_MOVEMENT = FRAME_EL_PITCH;
-constexpr int32_t EL_LARGE_MOVEMENT = 400;
+constexpr int32_t EL_LARGE_MOVEMENT = FRAME_EL_PITCH*15;
 
 // Manual movement speeds. Uppercase retains the faster movement.
-constexpr uint32_t SLOW_SPEED = 400;        // microsteps / second
-constexpr uint32_t FAST_SPEED = 2000;       // microsteps / second
+constexpr uint32_t SLOW_SPEED = 2000;        // microsteps / second
+constexpr uint32_t FAST_SPEED = SLOW_SPEED* 3 ;       // microsteps / second
 constexpr uint32_t ACCELERATION = 2500;     // microsteps / second^2
 
 // Frame-to-frame scanning is deliberately gentle.
